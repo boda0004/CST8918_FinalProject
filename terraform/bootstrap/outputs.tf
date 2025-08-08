@@ -1,8 +1,11 @@
-output "backend_config" {
-  description = "Backend configuration for other Terraform configurations"
-  value = {
-    resource_group_name  = module.terraform_backend.resource_group_name
-    storage_account_name = module.terraform_backend.storage_account_name
-    container_name      = module.terraform_backend.container_name
-  }
+output "resource_group_name" {
+  value = azurerm_resource_group.terraform_state.name
+}
+
+output "storage_account_name" {
+  value = azurerm_storage_account.terraform_state.name
+}
+
+output "container_name" {
+  value = azurerm_storage_container.terraform_state.name
 }
