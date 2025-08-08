@@ -1,3 +1,5 @@
+# Triggering GitHub Action workflow for test environment
+
 terraform {
   required_version = ">= 1.0"
   
