@@ -1,4 +1,5 @@
 name: 'Deploy Application to AKS'
+
 on:
   workflow_run:
     workflows: ["Build and Push Application", "Terraform Apply"]
@@ -16,6 +17,7 @@ on:
         description: 'Image tag to deploy'
         required: false
         default: 'latest'
+
 jobs:
   deploy:
     name: 'Deploy to AKS'
@@ -28,20 +30,24 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+
     - name: Azure Login
       uses: azure/login@v1
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
+
     - name: Set up kubectl
       uses: azure/setup-kubectl@v3
       with:
-        version: '1.28.0'
+        version: 'latest'   # <‚Äî changed from 1.28.0 to latest
+
     - name: Get AKS credentials
       run: |
         az aks get-credentials \
           --resource-group cst8918-final-project-group-5-${{ matrix.environment }} \
           --name ${{ matrix.environment }}-weather-aks \
           --overwrite-existing
+
     - name: Deploy Weather App
       run: |
         IMAGE_TAG=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || 'latest' }}
@@ -175,20 +181,4 @@ jobs:
           type: LoadBalancer
         EOL
         
-        # Wait for deployments
-        kubectl wait --for=condition=available --timeout=300s deployment/redis -n weather-app-${{ matrix.environment }}
-        kubectl wait --for=condition=available --timeout=300s deployment/weather-backend -n weather-app-${{ matrix.environment }}
-        kubectl wait --for=condition=available --timeout=300s deployment/weather-frontend -n weather-app-${{ matrix.environment }}
-        
-        # Get LoadBalancer IP
-        echo "Getting LoadBalancer IP..."
-        for i in {1..10}; do
-          EXTERNAL_IP=$(kubectl get service weather-frontend-service -n weather-app-${{ matrix.environment }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          if [ ! -z "$EXTERNAL_IP" ]; then
-            echo "Ìæâ ${{ matrix.environment }} environment deployed!"
-            echo "Ìºê URL: http://$EXTERNAL_IP"
-            break
-          fi
-          echo "Waiting for LoadBalancer IP... (attempt $i/10)"
-          sleep 30
-        done
+        # Wa
