@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'terraform/**'
-      - '.github/workflows/terraform-*.yml'   # allow trigger when you edit this file
+      - '.github/workflows/terraform-*.yml'
   workflow_dispatch:
     inputs:
       environment:
@@ -16,6 +16,7 @@ on:
         options: [dev, test, prod]
 
 env:
+  # Auth for azurerm provider (taken from your AZURE_CREDENTIALS secret)
   ARM_CLIENT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
   ARM_CLIENT_SECRET:   ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
   ARM_SUBSCRIPTION_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}
@@ -25,6 +26,7 @@ jobs:
   terraform-apply:
     name: 'Terraform Apply'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       matrix:
         environment: ${{ github.event_name == 'workflow_dispatch'
@@ -35,6 +37,10 @@ jobs:
       run:
         shell: bash
         working-directory: terraform/environments/${{ matrix.environment }}
+    # Make TF non-interactive and provide required variables
+    env:
+      TF_INPUT: "false"
+      TF_VAR_openweather_api_key: ${{ secrets.OPENWEATHER_API_KEY }}
 
     steps:
       - name: Checkout
@@ -48,7 +54,7 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      # --- SAFE IMPORTS (won't fail the job if already imported/missing) ---
+      # ---------- Idempotent imports so apply won't fail on existing resources ----------
       - name: Import Resource Group (idempotent)
         run: |
           terraform import azurerm_resource_group.main \
@@ -64,14 +70,15 @@ jobs:
           terraform import azurerm_container_registry.dev \
             "/subscriptions/${{ env.ARM_SUBSCRIPTION_ID }}/resourceGroups/cst8918-final-project-group-5-${{ matrix.environment }}/providers/Microsoft.ContainerRegistry/registries/cst8918weatheracr${{ matrix.environment }}" || true
 
-      # --- PLAN first; only APPLY when there are changes ---
+      # ---------- Plan first; only apply when there are changes ----------
       - name: Terraform Plan (detect changes)
         id: plan
         run: |
           set +e
-          terraform plan -var="openweather_api_key=${{ secrets.OPENWEATHER_API_KEY }}" -detailed-exitcode -no-color -out=tfplan
+          terraform plan -detailed-exitcode -no-color -out=tfplan
           CODE=$?
           echo "PLAN_EXIT=$CODE" >> $GITHUB_ENV
+          # 0=no changes, 2=changes, 1=error (we'll handle below)
           exit 0
 
       - name: Terraform Apply (only if changes)
@@ -81,3 +88,9 @@ jobs:
       - name: No changes to apply
         if: env.PLAN_EXIT == '0'
         run: echo "✅ No changes. Skipping terraform apply."
+
+      - name: Fail on plan error
+        if: env.PLAN_EXIT == '1'
+        run: |
+          echo "❌ terraform plan returned an error (exit code 1)."
+          exit 1
