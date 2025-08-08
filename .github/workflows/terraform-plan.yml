@@ -1,0 +1,32 @@
+name: 'Terraform Plan'
+on:
+  pull_request:
+    branches: [main]
+    paths: ['terraform/**', '.github/workflows/terraform-*.yml']
+env:
+  ARM_CLIENT_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+  ARM_CLIENT_SECRET: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
+  ARM_SUBSCRIPTION_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}
+  ARM_TENANT_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}
+jobs:
+  terraform-plan:
+    name: 'Terraform Plan'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, test, prod]
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform/environments/${{ matrix.environment }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.6.0
+    - name: Terraform Init
+      run: terraform init
+    - name: Terraform Plan
+      run: terraform plan -var="openweather_api_key=${{ secrets.OPENWEATHER_API_KEY }}" -out=tfplan-${{ matrix.environment }}

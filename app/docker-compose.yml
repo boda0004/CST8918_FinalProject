@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    image: weather-backend:latest
+    container_name: weather-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - OPENWEATHER_API_KEY=5bf03745d837700743e929f3c47e21e4
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=
+    depends_on:
+      - redis
+    networks:
+      - weather-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: weather-frontend:latest
+    container_name: weather-frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - BACKEND_URL=http://backend:3000
+      - NODE_ENV=production
+    depends_on:
+      - backend
+    networks:
+      - weather-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: weather-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - weather-network
+
+networks:
+  weather-network:
+    driver: bridge

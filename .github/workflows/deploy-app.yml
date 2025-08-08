@@ -1,0 +1,194 @@
+name: 'Deploy Application to AKS'
+on:
+  workflow_run:
+    workflows: ["Build and Push Application", "Terraform Apply"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, test, prod]
+      image_tag:
+        description: 'Image tag to deploy'
+        required: false
+        default: 'latest'
+jobs:
+  deploy:
+    name: 'Deploy to AKS'
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      matrix:
+        environment: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.environment)) || fromJSON('["dev", "test"]') }}
+    environment: ${{ matrix.environment }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: '1.28.0'
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials \
+          --resource-group cst8918-final-project-group-5-${{ matrix.environment }} \
+          --name ${{ matrix.environment }}-weather-aks \
+          --overwrite-existing
+    - name: Deploy Weather App
+      run: |
+        IMAGE_TAG=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || 'latest' }}
+        REPLICAS=${{ matrix.environment == 'prod' && 3 || matrix.environment == 'test' && 1 || 2 }}
+        
+        # Create namespace
+        kubectl create namespace weather-app-${{ matrix.environment }} --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Deploy Redis
+        kubectl apply -f - << EOL
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: redis
+          namespace: weather-app-${{ matrix.environment }}
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: redis
+          template:
+            metadata:
+              labels:
+                app: redis
+            spec:
+              containers:
+              - name: redis
+                image: redis:7-alpine
+                ports:
+                - containerPort: 6379
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: redis-service
+          namespace: weather-app-${{ matrix.environment }}
+        spec:
+          selector:
+            app: redis
+          ports:
+          - port: 6379
+            targetPort: 6379
+        EOL
+        
+        # Deploy Backend
+        kubectl apply -f - << EOL
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: weather-backend
+          namespace: weather-app-${{ matrix.environment }}
+        spec:
+          replicas: ${REPLICAS}
+          selector:
+            matchLabels:
+              app: weather-backend
+          template:
+            metadata:
+              labels:
+                app: weather-backend
+            spec:
+              containers:
+              - name: weather-backend
+                image: cst8918weatheracr.azurecr.io/weather-backend:${IMAGE_TAG}
+                ports:
+                - containerPort: 3000
+                env:
+                - name: OPENWEATHER_API_KEY
+                  value: "${{ secrets.OPENWEATHER_API_KEY }}"
+                - name: REDIS_HOST
+                  value: "redis-service"
+                - name: REDIS_PASSWORD
+                  value: ""
+                - name: REDIS_PORT
+                  value: "6379"
+                - name: REDIS_TLS
+                  value: "false"
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: weather-backend-service
+          namespace: weather-app-${{ matrix.environment }}
+        spec:
+          selector:
+            app: weather-backend
+          ports:
+          - port: 3000
+            targetPort: 3000
+        EOL
+        
+        # Deploy Frontend
+        kubectl apply -f - << EOL
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: weather-frontend
+          namespace: weather-app-${{ matrix.environment }}
+        spec:
+          replicas: ${REPLICAS}
+          selector:
+            matchLabels:
+              app: weather-frontend
+          template:
+            metadata:
+              labels:
+                app: weather-frontend
+            spec:
+              containers:
+              - name: weather-frontend
+                image: cst8918weatheracr.azurecr.io/weather-frontend:${IMAGE_TAG}
+                ports:
+                - containerPort: 3000
+                env:
+                - name: BACKEND_URL
+                  value: "http://weather-backend-service:3000"
+                - name: NODE_ENV
+                  value: "production"
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: weather-frontend-service
+          namespace: weather-app-${{ matrix.environment }}
+        spec:
+          selector:
+            app: weather-frontend
+          ports:
+          - port: 80
+            targetPort: 3000
+          type: LoadBalancer
+        EOL
+        
+        # Wait for deployments
+        kubectl wait --for=condition=available --timeout=300s deployment/redis -n weather-app-${{ matrix.environment }}
+        kubectl wait --for=condition=available --timeout=300s deployment/weather-backend -n weather-app-${{ matrix.environment }}
+        kubectl wait --for=condition=available --timeout=300s deployment/weather-frontend -n weather-app-${{ matrix.environment }}
+        
+        # Get LoadBalancer IP
+        echo "Getting LoadBalancer IP..."
+        for i in {1..10}; do
+          EXTERNAL_IP=$(kubectl get service weather-frontend-service -n weather-app-${{ matrix.environment }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [ ! -z "$EXTERNAL_IP" ]; then
+            echo "Ìæâ ${{ matrix.environment }} environment deployed!"
+            echo "Ìºê URL: http://$EXTERNAL_IP"
+            break
+          fi
+          echo "Waiting for LoadBalancer IP... (attempt $i/10)"
+          sleep 30
+        done
