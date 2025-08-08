@@ -1,8 +1,11 @@
 name: 'Terraform Apply'
+
 on:
   push:
     branches: [main]
-    paths: ['terraform/**']
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-*.yml'   # allow trigger when you edit this file
   workflow_dispatch:
     inputs:
       environment:
@@ -11,33 +14,70 @@ on:
         default: 'dev'
         type: choice
         options: [dev, test, prod]
+
 env:
-  ARM_CLIENT_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
-  ARM_CLIENT_SECRET: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
+  ARM_CLIENT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+  ARM_CLIENT_SECRET:   ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
   ARM_SUBSCRIPTION_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}
-  ARM_TENANT_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}
+  ARM_TENANT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}
+
 jobs:
   terraform-apply:
     name: 'Terraform Apply'
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        environment: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.environment)) || fromJSON('["dev", "test"]') }}
+        environment: ${{ github.event_name == 'workflow_dispatch'
+          && fromJSON(format('["{0}"]', github.event.inputs.environment))
+          || fromJSON('["dev","test"]') }}
     environment: ${{ matrix.environment }}
     defaults:
       run:
         shell: bash
         working-directory: terraform/environments/${{ matrix.environment }}
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.6.0
-    - name: Terraform Init
-      run: terraform init
-    - name: Terraform Apply
-      run: |
-        terraform plan -var="openweather_api_key=${{ secrets.OPENWEATHER_API_KEY }}" -out=tfplan
-        terraform apply tfplan
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Terraform Init
+        run: terraform init
+
+      # --- SAFE IMPORTS (won't fail the job if already imported/missing) ---
+      - name: Import Resource Group (idempotent)
+        run: |
+          terraform import azurerm_resource_group.main \
+            "/subscriptions/${{ env.ARM_SUBSCRIPTION_ID }}/resourceGroups/cst8918-final-project-group-5-${{ matrix.environment }}" || true
+
+      - name: Import AKS (idempotent)
+        run: |
+          terraform import azurerm_kubernetes_cluster.dev \
+            "/subscriptions/${{ env.ARM_SUBSCRIPTION_ID }}/resourceGroups/cst8918-final-project-group-5-${{ matrix.environment }}/providers/Microsoft.ContainerService/managedClusters/${{ matrix.environment }}-weather-aks" || true
+
+      - name: Import ACR (idempotent)
+        run: |
+          terraform import azurerm_container_registry.dev \
+            "/subscriptions/${{ env.ARM_SUBSCRIPTION_ID }}/resourceGroups/cst8918-final-project-group-5-${{ matrix.environment }}/providers/Microsoft.ContainerRegistry/registries/cst8918weatheracr${{ matrix.environment }}" || true
+
+      # --- PLAN first; only APPLY when there are changes ---
+      - name: Terraform Plan (detect changes)
+        id: plan
+        run: |
+          set +e
+          terraform plan -var="openweather_api_key=${{ secrets.OPENWEATHER_API_KEY }}" -detailed-exitcode -no-color -out=tfplan
+          CODE=$?
+          echo "PLAN_EXIT=$CODE" >> $GITHUB_ENV
+          exit 0
+
+      - name: Terraform Apply (only if changes)
+        if: env.PLAN_EXIT == '2'
+        run: terraform apply -auto-approve tfplan
+
+      - name: No changes to apply
+        if: env.PLAN_EXIT == '0'
+        run: echo "✅ No changes. Skipping terraform apply."
