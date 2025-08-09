@@ -17,4 +17,4 @@ The solution provisions:
 
 ---
 
-## 🏗 Project Architecture
+##  Project Architecture
